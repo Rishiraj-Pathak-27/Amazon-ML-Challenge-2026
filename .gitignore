@@ -2,6 +2,8 @@
 dataset/
 dataset
 student_resource/dataset/
+*.tar.gz
+*.zip
 
 # Outputs & Model Artifacts
 output/
