@@ -4,7 +4,8 @@ Run inference on the test set and generate:
     output/matching_results.tsv  -- final matched entities
 
 Fast, scalable country-partitioned multi-key pipeline.
-Optimized for low-RAM cloud instances (< 4 GB peak RAM) using batched streaming.
+Ultra low-memory footprint (< 4.5 GB peak RAM) using sparse defaultdicts,
+batched streaming, and aggressive memory reclamation.
 
 Usage:
     python -m src.predict --test-dir dataset/test --output-dir output
@@ -57,7 +58,7 @@ def run_prediction(test_dir="dataset/test", output_dir="output", max_cands_per_s
     clean_names = [_clean_name(x) for x in raw_names]
     clean_addrs = [_clean_addr(x) for x in raw_addrs]
 
-    # Free raw DataFrame memory
+    # Free raw DataFrame memory immediately
     del s1_df, raw_names, raw_addrs
     gc.collect()
 
@@ -84,14 +85,18 @@ def run_prediction(test_dir="dataset/test", output_dir="output", max_cands_per_s
                 first_w = cn.split()[0]
                 index_NA[(c, f"{nums[0]}_{first_w}")].append(idx)
 
+    # Free country strings since index has absorbed them
+    del countries
+    gc.collect()
+
     # Prune overly large N2 buckets to prevent false candidate explosion
     index_N2 = {k: v for k, v in index_N2.items() if len(v) <= 25}
 
     print(f"[+] Index built in {time.time() - t_idx:.2f}s! (N: {len(index_N):,}, A: {len(index_A):,}, NA: {len(index_NA):,})", flush=True)
 
-    # Containers for results per S1 entity
-    candidates_list = [set() for _ in range(n_s1)]
-    matches_list = [set() for _ in range(n_s1)]
+    # Use sparse defaultdicts: entities without candidates or matches consume 0 bytes
+    candidates_dict = defaultdict(set)
+    matches_dict = defaultdict(set)
 
     # Function to scan another source in memory-safe batches
     def process_source_batched(src_path, src_label):
@@ -100,14 +105,12 @@ def run_prediction(test_dir="dataset/test", output_dir="output", max_cands_per_s
 
         reader = pl.read_csv_batched(src_path, separator="\t", batch_size=batch_size)
         total_rows = 0
-        batch_num = 0
 
         while True:
             batches = reader.next_batches(1)
             if not batches:
                 break
             batch_df = batches[0]
-            batch_num += 1
             batch_len = len(batch_df)
             total_rows += batch_len
 
@@ -123,16 +126,14 @@ def run_prediction(test_dir="dataset/test", output_dir="output", max_cands_per_s
                 # 1. Exact Name Channel (high precision)
                 if cn and (c, cn) in index_N:
                     for idx in index_N[(c, cn)]:
-                        if len(candidates_list[idx]) < max_cands_per_s1:
-                            candidates_list[idx].add(eid)
-                        matches_list[idx].add(eid)
+                        matches_dict[idx].add(eid)
+                        candidates_dict[idx].add(eid)
 
                 # 2. Exact Address Channel
                 if ca and (c, ca) in index_A:
                     for idx in index_A[(c, ca)]:
-                        if len(candidates_list[idx]) < max_cands_per_s1:
-                            candidates_list[idx].add(eid)
-                        matches_list[idx].add(eid)
+                        matches_dict[idx].add(eid)
+                        candidates_dict[idx].add(eid)
 
                 # 3. Numeric + Name Prefix Channel
                 nums = [w for w in ca.split() if any(ch.isdigit() for ch in w)]
@@ -141,10 +142,11 @@ def run_prediction(test_dir="dataset/test", output_dir="output", max_cands_per_s
                     k = (c, f"{nums[0]}_{first_w}")
                     if k in index_NA:
                         for idx in index_NA[k]:
-                            if len(candidates_list[idx]) < max_cands_per_s1:
-                                candidates_list[idx].add(eid)
                             if fuzz.ratio(clean_names[idx], cn) >= 70:
-                                matches_list[idx].add(eid)
+                                matches_dict[idx].add(eid)
+                                candidates_dict[idx].add(eid)
+                            elif len(candidates_dict[idx]) < max_cands_per_s1:
+                                candidates_dict[idx].add(eid)
 
                 # 4. First 2 Words Name Channel
                 if cn:
@@ -153,11 +155,12 @@ def run_prediction(test_dir="dataset/test", output_dir="output", max_cands_per_s
                         k = (c, " ".join(words[:2]))
                         if k in index_N2:
                             for idx in index_N2[k]:
-                                if len(candidates_list[idx]) < max_cands_per_s1:
-                                    candidates_list[idx].add(eid)
                                 s1_ca = clean_addrs[idx]
                                 if fuzz.ratio(clean_names[idx], cn) >= 85 or (ca and s1_ca and fuzz.ratio(s1_ca, ca) >= 75):
-                                    matches_list[idx].add(eid)
+                                    matches_dict[idx].add(eid)
+                                    candidates_dict[idx].add(eid)
+                                elif len(candidates_dict[idx]) < max_cands_per_s1:
+                                    candidates_dict[idx].add(eid)
 
             del src_eids, src_countries, src_cnames, src_caddrs
             print(f"     [Progress] {src_label}: {total_rows:,} rows scanned in {time.time() - t_src:.1f}s", flush=True)
@@ -169,45 +172,48 @@ def run_prediction(test_dir="dataset/test", output_dir="output", max_cands_per_s
     process_source_batched(s2_path, "Source 2")
     process_source_batched(s3_path, "Source 3")
 
-    # Safety check: ensure every matched entity is also in candidates
-    for idx in range(n_s1):
-        candidates_list[idx].update(matches_list[idx])
-
-    # Free index structures before writing output to reclaim ~2.5 GB RAM
-    print("\n[*] Reclaiming memory before saving output files...", flush=True)
-    del index_N, index_A, index_NA, index_N2, clean_names, clean_addrs, countries
+    # CRITICAL: Reclaim index memory (~3 GB) IMMEDIATELY before saving files
+    print("\n[*] Freeing index memory before saving outputs...", flush=True)
+    del index_N, index_A, index_NA, index_N2, clean_names, clean_addrs
     gc.collect()
 
+    # Step 1: Write matching_results.tsv first
     match_path = os.path.join(output_dir, "matching_results.tsv")
-    cand_path = os.path.join(output_dir, "candidate_pairs.tsv")
-
-    # Write matching_results.tsv first
     print(f"[*] Writing {match_path}...", flush=True)
+    n_with_match = 0
     with open(match_path, "w", encoding="utf-8") as f:
         f.write("source1_entity_id\tmatched_entity_ids\n")
-        for eid, matched in zip(eids, matches_list):
-            match_str = ",".join(sorted(matched))
-            f.write(f"{eid}\t{match_str}\n")
+        for idx, eid in enumerate(eids):
+            if idx in matches_dict:
+                n_with_match += 1
+                match_str = ",".join(sorted(matches_dict[idx]))
+                f.write(f"{eid}\t{match_str}\n")
+            else:
+                f.write(f"{eid}\t\n")
 
-    n_with_match = sum(1 for m in matches_list if m)
     n_singletons = n_s1 - n_with_match
 
-    # Free matches_list
-    del matches_list
+    # Reclaim matches memory
+    del matches_dict
     gc.collect()
 
-    # Write candidate_pairs.tsv
+    # Step 2: Write candidate_pairs.tsv
+    cand_path = os.path.join(output_dir, "candidate_pairs.tsv")
     print(f"[*] Writing {cand_path}...", flush=True)
     total_cands = 0
     with open(cand_path, "w", encoding="utf-8") as f:
         f.write("source1_entity_id\tcandidate_entity_ids\n")
-        for eid, cands in zip(eids, candidates_list):
-            total_cands += len(cands)
-            cand_str = ",".join(sorted(cands))
-            f.write(f"{eid}\t{cand_str}\n")
+        for idx, eid in enumerate(eids):
+            if idx in candidates_dict:
+                cands = candidates_dict[idx]
+                total_cands += len(cands)
+                cand_str = ",".join(sorted(cands))
+                f.write(f"{eid}\t{cand_str}\n")
+            else:
+                f.write(f"{eid}\t\n")
 
-    # Free candidates_list
-    del candidates_list
+    # Reclaim candidates memory
+    del candidates_dict, eids
     gc.collect()
 
     print("\n" + "=" * 60, flush=True)
