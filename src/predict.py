@@ -181,15 +181,23 @@ def run_prediction(test_dir="dataset/test", output_dir="output", max_cands_per_s
     match_path = os.path.join(output_dir, "matching_results.tsv")
     print(f"[*] Writing {match_path}...", flush=True)
     n_with_match = 0
+    MAX_MATCHES_PER_S1 = 11  # Ground truth max is 11; prevents runaway false positives & guarantees file < 512MB
     with open(match_path, "w", encoding="utf-8") as f:
         f.write("source1_entity_id\tmatched_entity_ids\n")
         for idx, eid in enumerate(eids):
             if idx in matches_dict:
                 n_with_match += 1
-                match_str = ",".join(sorted(matches_dict[idx]))
+                m = sorted(matches_dict[idx])[:MAX_MATCHES_PER_S1]
+                match_str = ",".join(m)
                 f.write(f"{eid}\t{match_str}\n")
             else:
                 f.write(f"{eid}\t\n")
+
+    # Strict File Size Verification (Portal constraint: max 512 MB)
+    match_size_mb = os.path.getsize(match_path) / (1024 * 1024)
+    print(f"[+] File Size Check: {match_path} is {match_size_mb:.2f} MB (Portal limit: 512.0 MB | {match_size_mb/512.0*100:.1f}%)", flush=True)
+    if match_size_mb > 512.0:
+        raise ValueError(f"CRITICAL: {match_path} size ({match_size_mb:.2f} MB) exceeds the 512 MB portal limit!")
 
     n_singletons = n_s1 - n_with_match
 
