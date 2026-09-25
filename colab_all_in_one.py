@@ -23,7 +23,8 @@ from collections import defaultdict
 # ------------------------------------------------------------------------------
 # Optional: Set GitHub Personal Access Token to auto-push on every step.
 # You can generate one at: https://github.com/settings/tokens (needs 'repo' scope)
-GITHUB_TOKEN = "" 
+# Can also be set via: export GITHUB_TOKEN="ghp_xxx" or --token ghp_xxx
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 
 try:
     from google.colab import userdata
@@ -31,6 +32,10 @@ try:
         GITHUB_TOKEN = userdata.get("GITHUB_TOKEN")
 except Exception:
     pass
+
+for i, arg in enumerate(sys.argv):
+    if arg in ("--token", "--github-token") and i + 1 < len(sys.argv):
+        GITHUB_TOKEN = sys.argv[i + 1]
 
 REPO_OWNER_REPO = "Rishiraj-Pathak-27/Amazon-ML-Challenge-2026"
 DRIVE_BACKUP_DIR = "/content/drive/MyDrive/Amazon-ML-Submission"
