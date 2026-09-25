@@ -5,9 +5,8 @@ student_resource/dataset/
 *.tar.gz
 *.zip
 
-# Outputs & Model Artifacts
-output/
-model/
+# Outputs > 100MB (GitHub limit)
+output/candidate_pairs.tsv
 
 # Python & System
 __pycache__/
