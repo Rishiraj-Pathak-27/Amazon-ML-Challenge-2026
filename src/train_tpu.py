@@ -172,13 +172,14 @@ def train_model(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
 
-    print(f"\n[*] Commencing Training on {device_name.upper()} ({epochs} epochs)...")
+    print(f"\n[*] Commencing Training on {device_name.upper()} ({epochs} epochs)...", flush=True)
     model.train()
+    total_batches = len(train_loader)
     for ep in range(1, epochs + 1):
         ep_loss = 0.0
         n_batches = 0
         t_ep = time.time()
-        for batch_x, batch_y in train_loader:
+        for b_idx, (batch_x, batch_y) in enumerate(train_loader, 1):
             batch_x = batch_x.to(device)
             batch_y = batch_y.to(device)
 
@@ -196,12 +197,15 @@ def train_model(
             ep_loss += loss.item()
             n_batches += 1
 
+            if b_idx % 20 == 0 or b_idx == total_batches:
+                print(f"     Epoch {ep:02d}/{epochs:02d} | Step {b_idx:03d}/{total_batches:03d} | Current Batch Loss: {loss.item():.4f}", flush=True)
+
         scheduler.step()
         avg_loss = ep_loss / max(1, n_batches)
-        print(f"Epoch {ep:02d}/{epochs:02d} | Avg Loss: {avg_loss:.4f} | Time: {time.time()-t_ep:.2f}s")
+        print(f"[*] Epoch {ep:02d}/{epochs:02d} Complete | Avg Loss: {avg_loss:.4f} | Time: {time.time()-t_ep:.2f}s", flush=True)
 
     # Validation & Threshold Sweep
-    print("\n[*] Evaluating on Validation Set and Tuning Macro F0.5 Threshold...")
+    print("\n[*] Evaluating on Validation Set and Tuning Macro F0.5 Threshold...", flush=True)
     model.eval()
     val_probs = []
     if len(X_val_np) > 0:
@@ -223,8 +227,8 @@ def train_model(
         if score > best_score:
             best_score, best_threshold = score, float(threshold)
 
-    print(f"\n[+] Optimal Decision Threshold: {best_threshold:.2f}")
-    print(f"[+] Best Validation Macro F0.5: {best_score:.4f}")
+    print(f"\n[+] Optimal Decision Threshold: {best_threshold:.2f}", flush=True)
+    print(f"[+] Best Validation Macro F0.5: {best_score:.4f}", flush=True)
 
     # Save artifacts
     model_path = os.path.join(model_dir, "model_tpu.pt")
@@ -245,8 +249,8 @@ def train_model(
             indent=2,
         )
 
-    print(f"[+] Saved model weights to {model_path}")
-    print(f"[+] Saved config to {config_path}")
+    print(f"[+] Saved model weights to {model_path}", flush=True)
+    print(f"[+] Saved config to {config_path}", flush=True)
     return model, best_threshold
 
 

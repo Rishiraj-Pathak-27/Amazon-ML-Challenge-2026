@@ -60,11 +60,12 @@ def build_s1_index(source1_df, max_n2_bucket=100):
     return index
 
 
-def query_candidates_into(index, other_df, candidate_dict, max_per_entity=30):
+def query_candidates_into(index, other_df, candidate_dict, max_per_entity=30, label="source"):
     """
     Stream records from other_df (Source 2 or 3) and update candidate_dict:
     {s1_id: set(other_eids)}
     """
+    import time
     if len(other_df) == 0:
         return
 
@@ -73,7 +74,13 @@ def query_candidates_into(index, other_df, candidate_dict, max_per_entity=30):
     names = other_df["business_name"].to_list() if hasattr(other_df["business_name"], "to_list") else list(other_df["business_name"])
     addrs = other_df["business_address"].to_list() if hasattr(other_df["business_address"], "to_list") else list(other_df["business_address"])
 
-    for eid, c, nm, ad in zip(eids, countries, names, addrs):
+    n_total = len(eids)
+    print(f"  -> Scanning {label} ({n_total:,} rows)...", flush=True)
+    t0 = time.time()
+    for i, (eid, c, nm, ad) in enumerate(zip(eids, countries, names, addrs)):
+        if i > 0 and i % 1000000 == 0:
+            pct = (i / n_total) * 100
+            print(f"     [Progress] {label}: {i:,} / {n_total:,} ({pct:.0f}%) in {time.time() - t0:.1f}s", flush=True)
         matched_s1 = set()
         for k in _extract_keys(c, nm, ad, allow_n2=True):
             if k in index:
@@ -82,6 +89,7 @@ def query_candidates_into(index, other_df, candidate_dict, max_per_entity=30):
             s = candidate_dict[s1_id]
             if len(s) < max_per_entity:
                 s.add(eid)
+    print(f"  -> Finished scanning {label} in {time.time() - t0:.1f}s", flush=True)
 
 
 def build_all_candidates(source1_df, source2_df, source3_df, top_k=30):
@@ -89,11 +97,16 @@ def build_all_candidates(source1_df, source2_df, source3_df, top_k=30):
     Build candidates for all Source 1 entities from Source 2 and Source 3.
     Returns: {source1_entity_id: set(candidate_entity_ids)}
     """
+    import time
     s1_ids = source1_df["entity_id"].to_list() if hasattr(source1_df["entity_id"], "to_list") else list(source1_df["entity_id"])
     candidates = {sid: set() for sid in s1_ids}
 
+    print(f"  -> Indexing {len(s1_ids):,} Source 1 entities...", flush=True)
+    t_idx = time.time()
     index = build_s1_index(source1_df)
-    query_candidates_into(index, source2_df, candidates, max_per_entity=top_k)
-    query_candidates_into(index, source3_df, candidates, max_per_entity=top_k)
+    print(f"  -> S1 index built ({len(index):,} distinct keys) in {time.time() - t_idx:.2f}s", flush=True)
+
+    query_candidates_into(index, source2_df, candidates, max_per_entity=top_k, label="Source 2")
+    query_candidates_into(index, source3_df, candidates, max_per_entity=top_k, label="Source 3")
 
     return candidates

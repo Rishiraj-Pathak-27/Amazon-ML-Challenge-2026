@@ -106,11 +106,16 @@ def build_feature_frame(pairs_df, source1_df, other_df):
         zip(other_sub["business_name"], other_sub["business_address"], other_sub["country"])
     ))
 
+    import time
+    n_pairs = len(pairs_df)
     records = []
     s1_ids = pairs_df["source1_entity_id"].to_numpy()
     cand_ids = pairs_df["candidate_entity_id"].to_numpy()
 
-    for s1_id, cand_id in zip(s1_ids, cand_ids):
+    t0 = time.time()
+    for i, (s1_id, cand_id) in enumerate(zip(s1_ids, cand_ids)):
+        if i > 0 and i % 50000 == 0:
+            print(f"     [Progress] Computed features: {i:,} / {n_pairs:,} ({(i / n_pairs) * 100:.0f}%) in {time.time() - t0:.1f}s", flush=True)
         s1_row = s1_dict.get(s1_id, ("", "", ""))
         cand_row = other_dict.get(cand_id, ("", "", ""))
         records.append(compute_pair_features(s1_row, cand_row))
