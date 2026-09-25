@@ -37,7 +37,11 @@ for i, arg in enumerate(sys.argv):
     if arg in ("--token", "--github-token") and i + 1 < len(sys.argv):
         GITHUB_TOKEN = sys.argv[i + 1]
 
-REPO_OWNER_REPO = "Rishiraj-Pathak-27/Amazon-ML-Challenge-2026"
+REPO_OWNER_REPO = os.environ.get("GITHUB_REPO", "utkarsh232005/Amazon-ML-Challenge-2026")
+for i, arg in enumerate(sys.argv):
+    if arg in ("--repo", "--github-repo") and i + 1 < len(sys.argv):
+        REPO_OWNER_REPO = sys.argv[i + 1]
+
 DRIVE_BACKUP_DIR = "/content/drive/MyDrive/Amazon-ML-Submission"
 
 def sync_checkpoint(step_title, files_to_backup, commit_msg):
