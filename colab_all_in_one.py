@@ -63,10 +63,13 @@ def sync_checkpoint(step_title, files_to_backup, commit_msg):
     # 2. GitHub Sync
     if GITHUB_TOKEN:
         try:
-            os.system('git config user.name "Colab Auto-Sync" 2>/dev/null')
-            os.system('git config user.email "colab@google.com" 2>/dev/null')
+            os.system('git config user.name "Colab Auto-Sync"')
+            os.system('git config user.email "colab@google.com"')
             remote_url = f"https://{GITHUB_TOKEN}@github.com/{REPO_OWNER_REPO}.git"
-            os.system(f"git remote set-url origin {remote_url} 2>/dev/null")
+            os.system(f"git remote set-url origin '{remote_url}'")
+
+            # Pull latest changes to avoid non-fast-forward push rejection
+            os.system("git pull --rebase origin main")
 
             for src_path in files_to_backup:
                 if os.path.exists(src_path):
@@ -76,18 +79,20 @@ def sync_checkpoint(step_title, files_to_backup, commit_msg):
                         if not os.path.exists(gz_path):
                             print(f"  [*] Compressing {src_path} for GitHub (>95MB)...", flush=True)
                             os.system(f"gzip -c '{src_path}' > '{gz_path}'")
-                        os.system(f"git add '{gz_path}' 2>/dev/null")
+                        os.system(f"git add '{gz_path}'")
                     else:
-                        os.system(f"git add '{src_path}' 2>/dev/null")
+                        os.system(f"git add '{src_path}'")
 
-            os.system(f'git commit -m "{commit_msg}" 2>/dev/null')
-            ret = os.system("git push origin main 2>/dev/null")
-            if ret == 0:
+            os.system(f'git commit -m "{commit_msg}"')
+            ret = subprocess.run(["git", "push", "origin", "main"], capture_output=True, text=True)
+            if ret.returncode == 0:
                 print(f"  [+] Pushed to GitHub: {commit_msg}", flush=True)
             else:
-                print("  [*] GitHub push skipped or no new changes.", flush=True)
+                err_msg = ret.stderr.strip() or ret.stdout.strip()
+                print(f"  [!] GitHub push note: {err_msg}", flush=True)
+                print("      (Tip: Ensure token has 'repo' scope. Google Drive backup succeeded!)", flush=True)
         except Exception as e:
-            print(f"  [!] GitHub push notice: {e}", flush=True)
+            print(f"  [!] GitHub sync exception: {e}", flush=True)
     else:
         print("  [*] Tip: Set GITHUB_TOKEN at top of script to enable automatic git push.", flush=True)
 
