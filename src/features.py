@@ -91,14 +91,19 @@ def build_feature_frame(pairs_df, source1_df, other_df):
     if len(pairs_df) == 0:
         return pd.DataFrame(columns=["source1_entity_id", "candidate_entity_id"] + FEATURE_COLUMNS)
 
-    # Use fast dict lookups instead of DataFrame .loc
+    # Fast dict lookup only for required entities instead of all 5M records
+    s1_needed = set(pairs_df["source1_entity_id"])
+    s1_sub = source1_df[source1_df["entity_id"].isin(s1_needed)]
     s1_dict = dict(zip(
-        source1_df["entity_id"],
-        zip(source1_df["business_name"], source1_df["business_address"], source1_df["country"])
+        s1_sub["entity_id"],
+        zip(s1_sub["business_name"], s1_sub["business_address"], s1_sub["country"])
     ))
+
+    other_needed = set(pairs_df["candidate_entity_id"])
+    other_sub = other_df[other_df["entity_id"].isin(other_needed)]
     other_dict = dict(zip(
-        other_df["entity_id"],
-        zip(other_df["business_name"], other_df["business_address"], other_df["country"])
+        other_sub["entity_id"],
+        zip(other_sub["business_name"], other_sub["business_address"], other_sub["country"])
     ))
 
     records = []
