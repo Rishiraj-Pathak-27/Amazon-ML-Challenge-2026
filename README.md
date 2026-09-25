@@ -81,15 +81,35 @@ in the exact format the challenge requires. Run the challenge's own
   very large, vectorize the string-similarity computations or parallelize
   with `multiprocessing`.
 
+## Training on Google Colab TPU (via VS Code Extension)
+
+You can train the **Deep Residual Entity Matcher** on Google Colab's cloud **TPU** (Tensor Processing Unit) directly inside VS Code:
+
+1. Open `train_tpu.ipynb` in VS Code / Antigravity IDE.
+2. In the top-right corner of the notebook editor, click **Select Kernel** > **Google Colab** (or `Cmd+Shift+P` -> `Colab: Connect to a Colab runtime`).
+3. Sign in to your Google Account when prompted.
+4. Select the runtime accelerator: **TPU** (v2/v3/v5e).
+5. If your dataset is in Google Drive, run the Drive mount cell or use `Cmd+Shift+P` -> `Colab: Mount Google Drive to Server...`.
+6. Run the notebook cells to train the Deep Residual Entity Matcher using PyTorch-XLA (`torch_xla`), calibrate the $F_{0.5}$ decision threshold, and generate `matching_results.tsv`.
+
+Alternatively, from the command line on any TPU instance:
+```bash
+python -m src.train_tpu --train-dir dataset/train --model-dir model --epochs 10 --batch-size 2048
+```
+
 ## Files
 
 ```
 requirements.txt
+train_tpu.ipynb    # Google Colab TPU training and evaluation notebook
 src/
-  normalize.py   # text cleaning + abbreviation expansion
-  blocking.py    # candidate generation (TF-IDF NN + token blocking)
-  features.py    # pairwise similarity features
-  evaluate.py    # macro F_0.5 scorer (matches competition formula)
-  train.py       # trains model, tunes threshold, saves model/
-  predict.py     # scores test candidates, writes output/
+  normalize.py     # text cleaning + abbreviation expansion
+  blocking.py      # candidate generation (multi-key inverted index blocking)
+  features.py      # pairwise similarity features
+  evaluate.py      # macro F_0.5 scorer (matches competition formula)
+  model_tpu.py     # Deep Residual Entity Matcher PyTorch neural network
+  train_tpu.py     # TPU training pipeline with PyTorch-XLA & threshold tuning
+  train.py         # trains LightGBM model, tunes threshold, saves model/
+  predict.py       # scores test candidates, writes output/
 ```
+
