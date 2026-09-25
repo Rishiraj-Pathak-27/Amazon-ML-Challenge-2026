@@ -1,0 +1,17 @@
+# Datasets (large files > 100MB cannot be pushed to GitHub)
+dataset/
+dataset
+student_resource/dataset/
+
+# Outputs & Model Artifacts
+output/
+model/
+
+# Python & System
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.venv/
+venv/
+*.log
