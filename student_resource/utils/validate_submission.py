@@ -103,6 +103,12 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
         return None
 
     name = os.path.basename(path)
+    size_mb = os.path.getsize(path) / (1024 * 1024)
+    if "matching" in name and size_mb > 512.0:
+        errors.append(f"{name}: file size is {size_mb:.2f} MB, which exceeds the 512 MB submission limit!")
+    else:
+        print(f"  {name}: {size_mb:.2f} MB (within 512 MB competition limit).")
+
     mapping = {}
     seen, dup_rows, intra_dupes = set(), set(), set()
     self_matches, wrong_prefix, unknown = set(), set(), set()
