@@ -193,13 +193,13 @@ def main():
     # Determine auto-incrementing version
     os.makedirs(args.output_dir, exist_ok=True)
     if args.output_name is None:
-        version = 1
-        while True:
-            candidate_name = f"matching_results_V{version}.tsv"
-            if not os.path.exists(os.path.join(args.output_dir, candidate_name)):
-                args.output_name = candidate_name
-                break
-            version += 1
+        existing_versions = []
+        for fname in os.listdir(args.output_dir):
+            m = re.match(r"matching_results_V(\d+)\.tsv", fname)
+            if m:
+                existing_versions.append(int(m.group(1)))
+        version = max(existing_versions, default=0) + 1
+        args.output_name = f"matching_results_V{version}.tsv"
     else:
         # Extract version number if present to use for candidate pairs
         match = re.search(r'V(\d+)', args.output_name)
