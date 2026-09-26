@@ -1,0 +1,21 @@
+{
+  "threshold": 0.6499999999999999,
+  "val_f05": 0.9678134575480923,
+  "val_precision": 0.9859654781490119,
+  "val_recall": 0.9014306553549679,
+  "in_features": 11,
+  "feature_columns": [
+    "name_ratio",
+    "name_token_set_ratio",
+    "name_token_sort_ratio",
+    "core_name_ratio",
+    "address_ratio",
+    "address_token_set_ratio",
+    "address_number_match",
+    "country_match",
+    "name_exact_match",
+    "core_name_exact_match",
+    "address_exact_match"
+  ],
+  "epochs": 15
+}
