@@ -188,6 +188,7 @@ def main():
     parser.add_argument("--save-candidates", "--generate-candidates", action="store_true", default=False,
                         help="Generate candidate_pairs (only needed for final submission packaging; disabled by default)")
     parser.add_argument("--skip-training", action="store_true", help="Skip training and run inference using existing model")
+    parser.add_argument("--threshold", type=float, default=None, help="Decision threshold (default: from config or 0.65)")
     args = parser.parse_args()
 
     # Determine auto-incrementing version
@@ -342,10 +343,16 @@ def main():
 
     else:
         # Load existing config & weights
-        if os.path.exists("Amazon-ML-Submission/config.json"):
+        if args.threshold is not None:
+            best_thresh = args.threshold
+        elif os.path.exists("Amazon-ML-Submission/config.json"):
             with open("Amazon-ML-Submission/config.json") as f:
                 cfg = json.load(f)
-                best_thresh = cfg.get("threshold", 0.5)
+                best_thresh = cfg.get("threshold", 0.65)
+        else:
+            best_thresh = 0.65
+        print(f"[*] Inference Decision Threshold: {best_thresh:.4f}")
+
         if os.path.exists("model/model_m4.pt"):
             model.load_state_dict(torch.load("model/model_m4.pt", map_location=device))
         elif os.path.exists("Amazon-ML-Submission/model_tpu.pt"):
@@ -381,31 +388,29 @@ def main():
     print(f"[+] Loaded {n_s1:,} Test Source 1 entities in {time.time()-t_s1:.2f}s")
 
     index_N  = defaultdict(list)
-    index_W  = defaultdict(list)
+    index_A  = defaultdict(list)
+    index_NA = defaultdict(list)
+    index_N2 = defaultdict(list)
     index_NoSpace = defaultdict(list)
-    index_Num = defaultdict(list)
 
     for idx in range(n_s1):
         c, cn, ca = test_countries[idx], test_cnames[idx], test_caddrs[idx]
         if cn:
             index_N[(c, cn)].append(idx)
-            for word in cn.split():
-                if len(word) > 2:
-                    index_W[(c, word)].append(idx)
-            
+            words = cn.split()
+            if len(words) >= 2:
+                index_N2[(c, " ".join(words[:2]))].append(idx)
             cn_nospace = cn.replace(" ", "")
             if len(cn_nospace) >= 5:
                 index_NoSpace[(c, cn_nospace)].append(idx)
-                
         if ca:
+            index_A[(c, ca)].append(idx)
             nums = [w for w in ca.split() if any(ch.isdigit() for ch in w)]
-            for num in nums:
-                if len(num) >= 2:
-                    index_Num[(c, num)].append(idx)
+            if nums and cn:
+                index_NA[(c, f"{nums[0]}_{cn.split()[0]}")].append(idx)
 
     del test_countries
-    index_W = {k: v for k, v in index_W.items() if len(v) <= 100}
-    index_Num = {k: v for k, v in index_Num.items() if len(v) <= 50}
+    index_N2 = {k: v for k, v in index_N2.items() if len(v) <= 25}
     gc.collect()
 
     candidates_dict = defaultdict(dict)
@@ -442,32 +447,41 @@ def main():
                     for idx in index_N[(c, cn)]:
                         _add(idx)
 
+                if ca and (c, ca) in index_A:
+                    for idx in index_A[(c, ca)]:
+                        _add(idx)
+
+                nums = [w for w in ca.split() if any(ch.isdigit() for ch in w)]
+                if nums and cn:
+                    k = (c, f"{nums[0]}_{cn.split()[0]}")
+                    if k in index_NA:
+                        for idx in index_NA[k]:
+                            if fuzz.ratio(test_cnames[idx], cn) >= 70:
+                                _add(idx)
+
                 if cn:
-                    for word in cn.split():
-                        if len(word) > 2 and (c, word) in index_W:
-                            for idx in index_W[(c, word)]:
-                                if fuzz.ratio(test_cnames[idx], cn) >= 65:
+                    words = cn.split()
+                    if len(words) >= 2:
+                        k = (c, " ".join(words[:2]))
+                        if k in index_N2:
+                            for idx in index_N2[k]:
+                                s1_ca = test_caddrs[idx]
+                                if (fuzz.ratio(test_cnames[idx], cn) >= 85 or
+                                        (ca and s1_ca and fuzz.ratio(s1_ca, ca) >= 75)):
                                     _add(idx)
-                                    
-                    cand_nospace = cn.replace(" ", "").replace("com", "").replace("net", "").replace("org", "")
+
+                    cand_nospace = cn.replace(" ", "").replace(".com", "").replace("com", "").replace(".net", "").replace("net", "").replace(".org", "").replace("org", "")
                     if len(cand_nospace) >= 5 and (c, cand_nospace) in index_NoSpace:
                         for idx in index_NoSpace[(c, cand_nospace)]:
-                            _add(idx)
-
-                if ca:
-                    nums = [w for w in ca.split() if any(ch.isdigit() for ch in w)]
-                    for num in nums:
-                        if len(num) >= 2 and (c, num) in index_Num:
-                            for idx in index_Num[(c, num)]:
-                                if fuzz.token_set_ratio(test_caddrs[idx], ca) >= 65:
-                                    _add(idx)
+                            if fuzz.ratio(test_cnames[idx], cn) >= 80:
+                                _add(idx)
 
         print(f"[+] Finished {label}: {total_rows:,} records in {time.time()-t_start:.1f}s", flush=True)
 
     process_test_file(s2_path, "Test Source 2")
     process_test_file(s3_path, "Test Source 3")
 
-    del index_N, index_W, index_NoSpace, index_Num, test_cnames, test_caddrs
+    del index_N, index_A, index_NA, index_N2, index_NoSpace, test_cnames, test_caddrs
     gc.collect()
 
     # ==========================================================================
