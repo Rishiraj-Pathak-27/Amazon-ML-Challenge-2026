@@ -1,6 +1,4 @@
 # Datasets (large files > 100MB cannot be pushed to GitHub)
-dataset/
-dataset
 student_resource/dataset/
 *.tar.gz
 *.zip
