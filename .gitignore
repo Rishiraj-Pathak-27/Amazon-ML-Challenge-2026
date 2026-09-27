@@ -20,6 +20,5 @@ venv/
 # Ignore large model files and data
 *.pt
 *.tsv
-*.csv
 cleaned_dataset/
 output/
