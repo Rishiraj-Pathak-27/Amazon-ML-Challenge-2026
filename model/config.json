@@ -1,0 +1,26 @@
+{
+  "model_type": "LightGBM Classifier (Gradient Boosted Trees)",
+  "framework": "lightgbm",
+  "license": "MIT License",
+  "features": [
+    "name_ratio",
+    "name_token_set_ratio",
+    "name_token_sort_ratio",
+    "name_exact",
+    "core_ratio",
+    "core_token_set_ratio",
+    "core_exact",
+    "addr_token_set_ratio",
+    "num_overlap",
+    "hnum_match",
+    "hnum_conflict",
+    "country_match"
+  ],
+  "n_estimators": 300,
+  "threshold": 0.98,
+  "validation_metric": "Macro-F0.5",
+  "val_macro_f05": 0.800678447369624,
+  "train_pairs": 7125022,
+  "val_pairs": 1692757,
+  "trained_date": "2026-09-27 23:29:42"
+}
