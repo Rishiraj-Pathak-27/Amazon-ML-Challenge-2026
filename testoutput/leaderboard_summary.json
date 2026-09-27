@@ -1,0 +1,18 @@
+{
+  "benchmark_size": 5000,
+  "best_file": null,
+  "leaderboard": [],
+  "test_set_submissions": [
+    {
+      "file": "output/submmision/matching_results_V25.tsv",
+      "base_name": "matching_results_V25.tsv",
+      "total_rows": 1732544,
+      "matches": 1545431,
+      "singletons": 187113,
+      "match_rate": 89.20010112297292,
+      "file_size_mb": 78.56142234802246,
+      "status": "PASSED VALIDATION"
+    }
+  ],
+  "rejected_submissions": []
+}

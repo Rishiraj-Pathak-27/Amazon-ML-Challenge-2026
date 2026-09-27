@@ -81,35 +81,103 @@ in the exact format the challenge requires. Run the challenge's own
   very large, vectorize the string-similarity computations or parallelize
   with `multiprocessing`.
 
-## Training on Google Colab TPU (via VS Code Extension)
+## Repository Structure
 
-You can train the **Deep Residual Entity Matcher** on Google Colab's cloud **TPU** (Tensor Processing Unit) directly inside VS Code:
+The codebase is organized into modular directories:
 
-1. Open `train_tpu.ipynb` in VS Code / Antigravity IDE.
-2. In the top-right corner of the notebook editor, click **Select Kernel** > **Google Colab** (or `Cmd+Shift+P` -> `Colab: Connect to a Colab runtime`).
-3. Sign in to your Google Account when prompted.
-4. Select the runtime accelerator: **TPU** (v2/v3/v5e).
-5. If your dataset is in Google Drive, run the Drive mount cell or use `Cmd+Shift+P` -> `Colab: Mount Google Drive to Server...`.
-6. Run the notebook cells to train the Deep Residual Entity Matcher using PyTorch-XLA (`torch_xla`), calibrate the $F_{0.5}$ decision threshold, and generate `matching_results.tsv`.
+```
+business_entity_resolution/
+├── pipelines/                     # End-to-end inference & submission pipelines
+│   ├── run_pipeline_v4_production.py  # Production pipeline (High-Precision V5)
+│   ├── run_pipeline_v3.py         # Calibrated blocking & matching pipeline V3
+│   ├── run_pipeline_v2.py         # End-to-end local training & inference V2
+│   ├── run_optimized_pipeline.py  # Multi-channel inverted index pipeline
+│   └── run_high_recall_pipeline.py# 10+ channel high-recall pipeline
+│
+├── benchmarks/                    # Offline evaluation, parameter tuning & benchmarks
+│   ├── benchmark_v6.py            # Latest benchmark suite with refined metrics
+│   ├── benchmark_v5.py            # Multi-channel candidate benchmark
+│   ├── test_tuned_v3.py           # Calibration and sample validation
+│   ├── inspect_v5_errors.py       # False-positive / false-negative error analysis
+│   └── optimize_calibration.py    # Matcher threshold grid-search optimizer
+│
+├── training/                      # Model training & dataset synthesis
+│   ├── train_local_m4.py          # Native Apple Silicon M4 MPS / Neural Engine training
+│   ├── regenerate_training_data.py# Dataset generation with hard negative mining
+│   └── train_tpu.ipynb            # Google Colab TPU training notebook
+│
+├── colab/                         # Google Colab cloud runner & setup scripts
+│   ├── setup_colab.sh             # TPU/GPU environment setup script
+│   ├── run_colab_gpu.py           # Colab GPU automated execution driver
+│   └── colab_all_in_one.py        # All-in-one Colab submission generator
+│
+├── kaggle_runner/                 # Kaggle automated kernel runner
+│   ├── kaggle_pipeline.py         # Self-contained Kaggle runner pipeline
+│   └── kernel-metadata.json       # Kaggle kernel push configuration
+│
+├── kaggle_dataset/                # Kaggle dataset upload configuration & assets
+│   └── dataset-metadata.json
+│
+├── testoutput/                    # Unstop validation test suite & hidden testcases
+│   ├── simulate_unstop_portal.py  # Unstop Portal submission validator & F0.5 scorer
+│   ├── test_all_outputs.py        # Symlink entrypoint to simulate_unstop_portal.py
+│   ├── hidden_testcases.tsv       # 30,000 real ground-truth evaluation entities
+│   └── leaderboard_summary.json   # Benchmark ranking summary
+│
+├── src/                           # Core reusable Python package
+│   ├── normalize.py               # Text cleaning, abbreviation & legal suffix normalization
+│   ├── blocking.py                # Multi-key inverted index candidate blocking
+│   ├── features.py                # Pairwise similarity feature extraction
+│   ├── evaluate.py                # Official Macro F0.5 scoring metric
+│   ├── model_tpu.py               # Deep Residual Entity Matcher PyTorch neural network
+│   ├── train.py                   # LightGBM classifier training
+│   ├── train_local_m4.py          # M4-optimized model training
+│   └── predict.py                 # Candidate scoring & submission generation
+│
+├── model/                         # Saved weights & model hyperparameters
+│   ├── model_m4.pt                # Trained Deep Residual Entity Matcher weights
+│   ├── config.json                # Model & threshold configuration
+│   └── sklearn_entity_matcher.joblib # Trained scikit-learn matcher
+│
+├── output/                        # Competition submissions and outputs
+│   ├── submmision/                # Competition submission TSV files (matching_results_V*.tsv)
+│   └── archive/                   # Archived outputs
+│
+├── logs/                          # Execution logs
+│   ├── amazon-ml-entity-matcher.log
+│   └── test_run.log
+│
+├── student_resource/              # Official competition dataset & guidelines
+├── cleaned_dataset/               # Preprocessed null-free dataset
+├── dataset_rishiraj/              # Train/validation split datasets
+├── Amazon-ML-Submission/          # Submission zip archive & delivery bundle
+├── approach_summary.md            # Comprehensive solution architecture document
+├── AGENTS.md                      # Agent guidelines & submission rules
+└── requirements.txt               # Project dependencies
+```
 
-Alternatively, from the command line on any TPU instance:
+## Quick Start & Common Workflows
+
+### 1. Run Production Pipeline (Generate Submission)
 ```bash
-python -m src.train_tpu --train-dir dataset/train --model-dir model --epochs 10 --batch-size 2048
+python3 pipelines/run_pipeline_v4_production.py
+```
+Outputs `matching_results_V*.tsv` in `output/submmision/`.
+
+### 2. Validate & Benchmark Submission Files
+```bash
+python3 testoutput/simulate_unstop_portal.py
+```
+Validates portal formatting constraints and computes Macro $F_{0.5}$ across Public & Private leaderboard splits.
+
+### 3. Run Offline Benchmark
+```bash
+python3 benchmarks/benchmark_v6.py --eval-sample 5000
 ```
 
-## Files
+### 4. Train Model Locally on Apple Silicon M4
+```bash
+python3 training/train_local_m4.py --epochs 5 --batch-size 2048
+```
 
-```
-requirements.txt
-train_tpu.ipynb    # Google Colab TPU training and evaluation notebook
-src/
-  normalize.py     # text cleaning + abbreviation expansion
-  blocking.py      # candidate generation (multi-key inverted index blocking)
-  features.py      # pairwise similarity features
-  evaluate.py      # macro F_0.5 scorer (matches competition formula)
-  model_tpu.py     # Deep Residual Entity Matcher PyTorch neural network
-  train_tpu.py     # TPU training pipeline with PyTorch-XLA & threshold tuning
-  train.py         # trains LightGBM model, tunes threshold, saves model/
-  predict.py       # scores test candidates, writes output/
-```
 
