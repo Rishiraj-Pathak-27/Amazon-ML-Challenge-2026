@@ -17,7 +17,6 @@ venv/
 
 # Ignore large model files and data
 *.pt
-*.tsv
 cleaned_dataset/
 # Ignore large dataset test set (store externally or use Git LFS)
 output/
