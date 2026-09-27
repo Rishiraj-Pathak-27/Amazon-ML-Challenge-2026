@@ -20,5 +20,4 @@ venv/
 *.tsv
 cleaned_dataset/
 # Ignore large dataset test set (store externally or use Git LFS)
-dataset_rishiraj/test_set/
 output/
