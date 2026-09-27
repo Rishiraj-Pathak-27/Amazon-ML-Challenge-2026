@@ -16,3 +16,10 @@ __pycache__/
 .venv/
 venv/
 *.log
+
+# Ignore large model files and data
+*.pt
+*.tsv
+*.csv
+cleaned_dataset/
+output/
