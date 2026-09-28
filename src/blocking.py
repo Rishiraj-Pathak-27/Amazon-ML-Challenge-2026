@@ -1,112 +1,57 @@
 """
-Scalable, country-partitioned multi-key inverted index blocking.
-
-Keys used per entity within each country partition:
-1. Exact normalized core business name ('N')
-2. Exact normalized core business address ('A')
-3. Address number + first core name token ('NA')
-4. First two core name tokens ('N2', capped to max_bucket_size to prevent explosion)
-
-This achieves high recall while keeping candidate counts small (~10-25 per entity),
-runs in linear time with minimal RAM (< 1.5 GB), and handles millions of records in minutes.
+Multi-channel inverted index blocking for scalable candidate generation.
 """
 from collections import defaultdict
-import re
-import pandas as pd
-
-from .normalize import core_name, core_address, normalize_country
+from .normalize import norm_country, clean_name, core_name, name_no_space, clean_addr, extract_addr_features
 
 
-def _extract_keys(country, name, address, allow_n2=True):
-    c = normalize_country(country)
-    cn = core_name(name)
-    ca = core_address(address)
+def extract_blocking_keys(country, name, raw_addr, clean_a):
+    norm_c = norm_country(country)
+    cn = clean_name(name)
     keys = []
     if cn:
-        keys.append(("N", c, cn))
+        keys.append(("N_EXACT", norm_c, cn))
+        cr = core_name(cn)
+        if cr and cr != cn:
+            keys.append(("N_CORE", norm_c, cr))
         words = cn.split()
-        if allow_n2 and len(words) >= 2:
-            keys.append(("N2", c, " ".join(words[:2])))
-    if ca:
-        keys.append(("A", c, ca))
-        nums = [w for w in ca.split() if any(ch.isdigit() for ch in w)]
-        if nums and cn:
-            first_w = cn.split()[0]
-            keys.append(("NA", c, f"{nums[0]}_{first_w}"))
+        if len(words) >= 2:
+            keys.append(("N_FIRST2", norm_c, f"{words[0]} {words[1]}"))
+            keys.append(("N_SORTED", norm_c, " ".join(sorted(words))))
+        nosp = name_no_space(cn)
+        if len(nosp) >= 5:
+            keys.append(("N_NOSP", norm_c, nosp))
+
+    postal, hnum, nums_set, street_words, multi_hnums = extract_addr_features(raw_addr, clean_a, norm_c)
+    for h in multi_hnums:
+        if postal and h:
+            keys.append(("ZIP_NUM", norm_c, f"{postal}_{h}"))
+        if h and street_words:
+            keys.append(("NUM_STREET", norm_c, f"{h}_{street_words[0]}"))
+        if h and cn:
+            w0 = cn.split()[0]
+            if len(w0) >= 3:
+                keys.append(("NA_NUM", norm_c, f"{h}_{w0}"))
+    if clean_a:
+        keys.append(("A_EXACT", norm_c, clean_a))
     return keys
 
 
-def build_s1_index(source1_df, max_n2_bucket=100):
-    """
-    Build multi-key inverted index from Source 1 entities.
-    Returns: index dict mapping key -> list of s1_entity_ids
-    """
+def build_inverted_index(entity_ids, countries, names, raw_addrs, clean_addrs, max_bucket_size=50):
+    """Builds multi-channel inverted index mapping blocking keys to entity IDs."""
     index = defaultdict(list)
-    
-    eids = source1_df["entity_id"].to_list() if hasattr(source1_df["entity_id"], "to_list") else list(source1_df["entity_id"])
-    countries = source1_df["country"].to_list() if hasattr(source1_df["country"], "to_list") else list(source1_df["country"])
-    names = source1_df["business_name"].to_list() if hasattr(source1_df["business_name"], "to_list") else list(source1_df["business_name"])
-    addrs = source1_df["business_address"].to_list() if hasattr(source1_df["business_address"], "to_list") else list(source1_df["business_address"])
+    for idx, (eid, c, nm, ad, ca) in enumerate(zip(entity_ids, countries, names, raw_addrs, clean_addrs)):
+        for k in extract_blocking_keys(c, nm, ad, ca):
+            index[k].append(idx)
 
-    for eid, c, nm, ad in zip(eids, countries, names, addrs):
-        for k in _extract_keys(c, nm, ad, allow_n2=True):
-            index[k].append(eid)
-
-    # Prune overgrown N2 buckets to prevent combinatorial explosion on common names
-    keys_to_remove = [k for k, v in index.items() if k[0] == "N2" and len(v) > max_n2_bucket]
-    for k in keys_to_remove:
-        del index[k]
-
+    # Prune giant high-frequency buckets to prevent explosion
+    max_buckets = {
+        "N_EXACT": 100, "N_CORE": 50, "A_EXACT": 100,
+        "N_FIRST2": 30, "N_SORTED": 30, "N_NOSP": 40,
+        "ZIP_NUM": 30, "NUM_STREET": 25, "NA_NUM": 25,
+    }
+    for k in list(index.keys()):
+        limit = max_buckets.get(k[0], max_bucket_size)
+        if len(index[k]) > limit:
+            del index[k]
     return index
-
-
-def query_candidates_into(index, other_df, candidate_dict, max_per_entity=30, label="source"):
-    """
-    Stream records from other_df (Source 2 or 3) and update candidate_dict:
-    {s1_id: set(other_eids)}
-    """
-    import time
-    if len(other_df) == 0:
-        return
-
-    eids = other_df["entity_id"].to_list() if hasattr(other_df["entity_id"], "to_list") else list(other_df["entity_id"])
-    countries = other_df["country"].to_list() if hasattr(other_df["country"], "to_list") else list(other_df["country"])
-    names = other_df["business_name"].to_list() if hasattr(other_df["business_name"], "to_list") else list(other_df["business_name"])
-    addrs = other_df["business_address"].to_list() if hasattr(other_df["business_address"], "to_list") else list(other_df["business_address"])
-
-    n_total = len(eids)
-    print(f"  -> Scanning {label} ({n_total:,} rows)...", flush=True)
-    t0 = time.time()
-    for i, (eid, c, nm, ad) in enumerate(zip(eids, countries, names, addrs)):
-        if i > 0 and i % 1000000 == 0:
-            pct = (i / n_total) * 100
-            print(f"     [Progress] {label}: {i:,} / {n_total:,} ({pct:.0f}%) in {time.time() - t0:.1f}s", flush=True)
-        matched_s1 = set()
-        for k in _extract_keys(c, nm, ad, allow_n2=True):
-            if k in index:
-                matched_s1.update(index[k])
-        for s1_id in matched_s1:
-            s = candidate_dict[s1_id]
-            if len(s) < max_per_entity:
-                s.add(eid)
-    print(f"  -> Finished scanning {label} in {time.time() - t0:.1f}s", flush=True)
-
-
-def build_all_candidates(source1_df, source2_df, source3_df, top_k=30):
-    """
-    Build candidates for all Source 1 entities from Source 2 and Source 3.
-    Returns: {source1_entity_id: set(candidate_entity_ids)}
-    """
-    import time
-    s1_ids = source1_df["entity_id"].to_list() if hasattr(source1_df["entity_id"], "to_list") else list(source1_df["entity_id"])
-    candidates = {sid: set() for sid in s1_ids}
-
-    print(f"  -> Indexing {len(s1_ids):,} Source 1 entities...", flush=True)
-    t_idx = time.time()
-    index = build_s1_index(source1_df)
-    print(f"  -> S1 index built ({len(index):,} distinct keys) in {time.time() - t_idx:.2f}s", flush=True)
-
-    query_candidates_into(index, source2_df, candidates, max_per_entity=top_k, label="Source 2")
-    query_candidates_into(index, source3_df, candidates, max_per_entity=top_k, label="Source 3")
-
-    return candidates

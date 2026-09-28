@@ -1,138 +1,118 @@
 """
-Text normalization utilities for business names and addresses.
-
-Handles common abbreviation expansion, punctuation stripping, and case
-folding so that superficially different strings (different sources use
-different conventions) compare fairly.
+Text normalization, phonetic/abbreviation mapping, and structural feature extractors.
 """
 import re
 
-_PUNCT_RE = re.compile(r"[^\w\s]")
-_MULTI_SPACE_RE = re.compile(r"\s+")
-
-# Canonical expansion of common legal-entity abbreviations.
-_NAME_ABBREVIATIONS = {
-    "corp": "corporation",
-    "co": "company",
-    "inc": "incorporated",
-    "ltd": "limited",
-    "pvt": "private",
-    "llc": "limited liability company",
-    "llp": "limited liability partnership",
-    "intl": "international",
-    "mfg": "manufacturing",
-    "assoc": "associates",
-    "assocs": "associates",
-    "bros": "brothers",
-    "grp": "group",
-    "svcs": "services",
-    "svc": "service",
-    "and": "and",
-    "sa": "societe anonyme",
-    "sarl": "societe a responsabilite limitee",
-    "sas": "societe par actions simplifiee",
-    "sasu": "societe par actions simplifiee unipersonnelle",
-    "eurl": "entreprise unipersonnelle a responsabilite limitee",
-    "sci": "societe civile immobiliere",
+_COUNTRY_MAP = {
+    "usa": "us", "united states": "us", "uk": "gb",
+    "united kingdom": "gb", "great britain": "gb",
+    "deutschland": "de", "germany": "de", "france": "fr",
+    "italia": "it", "italy": "it", "espana": "es", "spain": "es",
+    "india": "in", "china": "cn", "japan": "jp", "canada": "ca",
+    "australia": "au", "brazil": "br", "brasil": "br", "mexico": "mx",
 }
 
-# Legal suffixes to drop when extracting the core business name
 LEGAL_SUFFIXES = {
-    "corporation", "corp", "company", "co", "incorporated", "inc",
-    "limited", "ltd", "private", "pvt", "limited liability company", "llc",
-    "limited liability partnership", "llp", "sa", "sarl", "sas", "sasu",
-    "eurl", "sci", "group", "grp", "services", "svcs", "holdings",
-    "enterprises", "trading", "industries",
+    "ltd", "limited", "inc", "incorporated", "corp", "corporation",
+    "llc", "gmbh", "sa", "sarl", "sas", "sasu", "eurl", "sci", "snc", "scop", "ei",
+    "sl", "bv", "co", "company", "pvt", "private", "plc", "srl", "pty",
+    "holdings", "group", "mr", "mrs", "dr", "dds", "services", "service",
+    "center", "centre", "solutions", "enterprises", "enterprise", "partners",
+    "consulting", "associates", "llp", "public", "pllc", "pc", "pa",
+    "traders", "agency", "agencies", "stores",
 }
 
-# Canonical expansion of common address abbreviations.
-_ADDRESS_ABBREVIATIONS = {
-    "rd": "road",
-    "st": "street",
-    "ave": "avenue",
-    "blvd": "boulevard",
-    "bd": "boulevard",
-    "bld": "boulevard",
-    "ln": "lane",
-    "dr": "drive",
-    "apt": "apartment",
-    "fl": "floor",
-    "flr": "floor",
-    "bldg": "building",
-    "no": "number",
-    "nr": "near",
-    "opp": "opposite",
-    "sq": "square",
-    "hwy": "highway",
-    "ste": "suite",
-    "pk": "park",
-    "ct": "court",
-    "cir": "circle",
-    "e": "east",
-    "w": "west",
-    "n": "north",
-    "s": "south",
-    "av": "avenue",
-    "pl": "place",
-    "rte": "route",
-    "all": "allee",
+_ADDR_COMMON = {
+    "rd": "road", "st": "street", "ave": "avenue", "av": "avenue",
+    "blvd": "boulevard", "dr": "drive", "ln": "lane", "ct": "court",
+    "sq": "square", "ste": "suite", "apt": "apartment", "dept": "department",
+    "fl": "floor", "bldg": "building", "hwy": "highway", "pkwy": "parkway",
+    "str": "strasse", "pl": "place", "terr": "terrace",
+    "cir": "circle", "trl": "trail", "twp": "township",
+    "bd": "boulevard", "bvd": "boulevard", "ch": "chemin",
+    "imp": "impasse", "rte": "route", "crs": "cours", "al": "allee",
+    "fg": "faubourg", "pass": "passage", "qu": "quai",
+    "1st": "first", "2nd": "second", "3rd": "third", "4th": "fourth",
+    "5th": "fifth", "6th": "sixth", "7th": "seventh", "8th": "eighth",
+    "9th": "ninth", "10th": "tenth",
 }
 
-# Filler / landmark words that carry little discriminative signal for
-# address token-overlap features (kept in the normalized string, only
-# excluded from the token-set used for Jaccard-style comparisons).
-_ADDRESS_STOPWORDS = {"near", "opposite", "behind", "next", "to", "the", "of"}
 
-
-def basic_clean(text):
-    """Lowercase, expand '&', strip punctuation, collapse whitespace."""
-    if text is None:
+def norm_country(c):
+    if not c or c != c:
         return ""
-    text = str(text).lower()
-    text = text.replace("&", " and ")
-    text = _PUNCT_RE.sub(" ", text)
-    text = _MULTI_SPACE_RE.sub(" ", text).strip()
-    return text
+    c_clean = str(c).strip().lower()
+    return _COUNTRY_MAP.get(c_clean, c_clean)
 
 
-def _expand_tokens(tokens, mapping):
-    return [mapping.get(tok, tok) for tok in tokens]
-
-
-def normalize_name(text):
-    cleaned = basic_clean(text)
-    tokens = _expand_tokens(cleaned.split(), _NAME_ABBREVIATIONS)
-    return " ".join(tokens)
-
-
-def core_name(text):
-    norm = normalize_name(text)
-    tokens = [tok for tok in norm.split() if tok not in LEGAL_SUFFIXES]
-    return " ".join(tokens)
-
-
-def normalize_address(text):
-    cleaned = basic_clean(text)
-    tokens = _expand_tokens(cleaned.split(), _ADDRESS_ABBREVIATIONS)
-    return " ".join(tokens)
-
-
-def core_address(text):
-    norm = normalize_address(text)
-    tokens = [tok for tok in norm.split() if tok not in _ADDRESS_STOPWORDS]
-    return " ".join(tokens)
-
-
-def name_tokens(text):
-    return set(normalize_name(text).split())
-
-
-def address_tokens(text):
-    toks = set(normalize_address(text).split())
-    return toks - _ADDRESS_STOPWORDS
-
-
-def normalize_country(text):
-    if text is None:
+def clean_name(name):
+    if not name or name != name:
         return ""
-    return str(text).strip().lower()
+    s = str(name).lower()
+    s = re.sub(r"\([^)]*\)", "", s)
+    s = re.sub(r"https?://\S+|www\.\S+|\.(?:com|org|net|in|fr|co|io|biz|info|gov)\b", "", s)
+    s = re.sub(r"[-–—]\s*\d{6,}\b", "", s)
+    s = re.sub(r"#\s*\d+\b", "", s)
+    s = re.sub(r"[^\w\s]", " ", s)
+    return " ".join(s.split())
+
+
+def core_name(cleaned_name):
+    if not cleaned_name:
+        return ""
+    words = cleaned_name.split()
+    filtered = [w for w in words if w not in LEGAL_SUFFIXES]
+    return " ".join(filtered) if filtered else cleaned_name
+
+
+def name_no_space(cleaned_name):
+    if not cleaned_name:
+        return ""
+    return re.sub(r"\s+", "", cleaned_name)
+
+
+def clean_addr(addr, country):
+    if not addr or addr != addr:
+        return ""
+    s = str(addr).lower()
+    s = re.sub(r"\b(?:null|none|nan|n\s*/\s*a|<null>)\b", " ", s)
+    s = re.sub(r"[^\w\s/]", " ", s)
+    tokens = s.split()
+    expanded = [_ADDR_COMMON.get(t, t) for t in tokens]
+    return " ".join(expanded)
+
+
+def extract_addr_features(raw_addr, clean_a, country):
+    postal = ""
+    if country == "us":
+        m = re.findall(r"\b(\d{5})(?:-\d{4})?\b", str(raw_addr))
+        if m:
+            postal = m[-1]
+    elif country == "in":
+        m = re.findall(r"\b([1-9]\d{5})\b", str(raw_addr))
+        if m:
+            postal = m[-1]
+    elif country == "fr":
+        m = re.findall(r"\b(\d{5})\b", str(raw_addr))
+        if m:
+            postal = m[-1]
+
+    nums = re.findall(r"\b\d+\b", clean_a)
+    hnum = nums[0] if nums else ""
+    nums_set = set(nums)
+
+    street_words = [w for w in clean_a.split() if len(w) >= 4 and not w.isdigit()]
+    multi_hnums = nums[:3]
+    return postal, hnum, nums_set, street_words, multi_hnums
+
+
+def is_acronym(short_name, long_name):
+    if not short_name or not long_name:
+        return False
+    words = long_name.split()
+    if len(words) < 2 or len(short_name) != len(words):
+        return False
+    stop = {"of", "the", "and", "for", "in", "on", "at", "to", "a", "an"}
+    words_nostop = [w for w in words if w not in stop]
+    acr_nostop = "".join(w[0] for w in words_nostop if w)
+    return short_name == acr_nostop

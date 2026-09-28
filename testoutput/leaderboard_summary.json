@@ -1,0 +1,38 @@
+{
+  "benchmark_size": 5000,
+  "best_file": null,
+  "leaderboard": [],
+  "test_set_submissions": [
+    {
+      "file": "output/submmision/matching_results_V24.tsv",
+      "base_name": "matching_results_V24.tsv",
+      "total_rows": 1732544,
+      "matches": 1537092,
+      "singletons": 195452,
+      "match_rate": 88.71878578552695,
+      "file_size_mb": 76.39784812927246,
+      "status": "PASSED VALIDATION"
+    },
+    {
+      "file": "output/submmision/matching_results_V25.tsv",
+      "base_name": "matching_results_V25.tsv",
+      "total_rows": 1732544,
+      "matches": 1545431,
+      "singletons": 187113,
+      "match_rate": 89.20010112297292,
+      "file_size_mb": 78.56142234802246,
+      "status": "PASSED VALIDATION"
+    },
+    {
+      "file": "output/submmision/matching_results.tsv",
+      "base_name": "matching_results.tsv",
+      "total_rows": 1732544,
+      "matches": 1545431,
+      "singletons": 187113,
+      "match_rate": 89.20010112297292,
+      "file_size_mb": 78.56142234802246,
+      "status": "PASSED VALIDATION"
+    }
+  ],
+  "rejected_submissions": []
+}

@@ -1,124 +1,51 @@
 """
-Pairwise feature engineering for (Source-1, candidate) record pairs.
-These features feed the LightGBM match / no-match classifier.
+Pairwise feature extraction between Source 1 and target candidates.
 """
-import pandas as pd
 from rapidfuzz import fuzz
+from .normalize import is_acronym
 
-from .normalize import (
-    normalize_name,
-    core_name,
-    normalize_address,
-    core_address,
-    name_tokens,
-    address_tokens,
-    normalize_country,
-)
-
-FEATURE_COLUMNS = [
-    "name_jaccard", "name_levenshtein", "name_token_sort", "name_partial",
-    "addr_jaccard", "addr_levenshtein", "addr_token_sort", "country_match",
-    "name_len_diff", "addr_len_diff", "common_name_tokens", "first_token_match",
-    "exact_name_match", "exact_addr_match", "num_overlap",
+FEATURE_NAMES = [
+    "name_ratio",
+    "name_token_set_ratio",
+    "name_token_sort_ratio",
+    "name_exact",
+    "core_ratio",
+    "core_token_set_ratio",
+    "core_exact",
+    "addr_token_set_ratio",
+    "num_overlap",
+    "hnum_match",
+    "hnum_conflict",
+    "country_match",
 ]
 
 
-def _jaccard(a, b):
-    if not a and not b:
-        return 1.0
-    if not a or not b:
-        return 0.0
-    inter = len(a & b)
-    union = len(a | b)
-    return inter / union if union else 0.0
-
-
-def _extract_numbers(text):
-    return set(tok for tok in text.split() if any(ch.isdigit() for ch in tok))
-
-
-def compute_pair_features(s1_tuple, cand_tuple):
+def compute_pairwise_features(s1_meta, t_meta):
     """
-    s1_tuple / cand_tuple: (business_name, business_address, country)
+    Computes a 12-dimensional numerical feature vector for candidate pairs.
+    s1_meta and t_meta are tuples: (clean_name, clean_addr, core_name, nums_set, hnum, norm_country)
     """
-    s1_name, s1_addr, s1_c = s1_tuple
-    c_name, c_addr, c_c = cand_tuple
+    s1_cn, s1_ca, s1_cr, s1_nums, s1_hnum, s1_c = s1_meta
+    t_cn, t_ca, t_cr, t_nums, t_hnum, t_c = t_meta
 
-    s1_name_norm, c_name_norm = normalize_name(s1_name), normalize_name(c_name)
-    s1_addr_norm, c_addr_norm = normalize_address(s1_addr), normalize_address(c_addr)
+    name_exact = 1.0 if (s1_cn and t_cn and s1_cn == t_cn) else 0.0
+    name_ratio = 100.0 if name_exact else (fuzz.ratio(s1_cn, t_cn) if (s1_cn and t_cn) else 0.0)
+    name_tsr = fuzz.token_set_ratio(s1_cn, t_cn) if (s1_cn and t_cn) else 0.0
+    name_tsort = fuzz.token_sort_ratio(s1_cn, t_cn) if (s1_cn and t_cn) else 0.0
 
-    s1_cname, c_cname = core_name(s1_name), core_name(c_name)
-    s1_caddr, c_caddr = core_address(s1_addr), core_address(c_addr)
+    core_exact = 1.0 if (s1_cr and t_cr and s1_cr == t_cr) else 0.0
+    core_ratio = fuzz.ratio(s1_cr, t_cr) if (s1_cr and t_cr) else 0.0
+    core_tsr = fuzz.token_set_ratio(s1_cr, t_cr) if (s1_cr and t_cr) else 0.0
 
-    s1_name_tok, c_name_tok = name_tokens(s1_name), name_tokens(c_name)
-    s1_addr_tok, c_addr_tok = address_tokens(s1_addr), address_tokens(c_addr)
+    addr_tsr = fuzz.token_set_ratio(s1_ca, t_ca) if (s1_ca and t_ca) else 0.0
+    num_overlap = 1.0 if (s1_nums and t_nums and (s1_nums & t_nums)) else 0.0
 
-    s1_country = normalize_country(s1_c)
-    c_country = normalize_country(c_c)
+    hnum_match = 1.0 if (s1_hnum and t_hnum and s1_hnum == t_hnum) else 0.0
+    hnum_conflict = 1.0 if (s1_hnum and t_hnum and s1_hnum != t_hnum) else 0.0
+    country_match = 1.0 if (s1_c and t_c and s1_c == t_c) else 0.0
 
-    s1_nums = _extract_numbers(s1_addr_norm)
-    c_nums = _extract_numbers(c_addr_norm)
-    num_match = int(bool(s1_nums and c_nums and (s1_nums & c_nums)))
-
-    return {
-        "name_jaccard": _jaccard(s1_name_tok, c_name_tok),
-        "name_levenshtein": fuzz.ratio(s1_name_norm, c_name_norm) / 100.0,
-        "name_token_sort": fuzz.token_sort_ratio(s1_name_norm, c_name_norm) / 100.0,
-        "name_partial": fuzz.partial_ratio(s1_name_norm, c_name_norm) / 100.0,
-        "addr_jaccard": _jaccard(s1_addr_tok, c_addr_tok),
-        "addr_levenshtein": fuzz.ratio(s1_addr_norm, c_addr_norm) / 100.0,
-        "addr_token_sort": fuzz.token_sort_ratio(s1_addr_norm, c_addr_norm) / 100.0,
-        "country_match": int(s1_country == c_country and s1_country != ""),
-        "name_len_diff": abs(len(s1_name_norm) - len(c_name_norm)),
-        "addr_len_diff": abs(len(s1_addr_norm) - len(c_addr_norm)),
-        "common_name_tokens": len(s1_name_tok & c_name_tok),
-        "first_token_match": int(
-            bool(s1_name_norm) and bool(c_name_norm)
-            and s1_name_norm.split()[0] == c_name_norm.split()[0]
-        ),
-        "exact_name_match": int(bool(s1_cname) and s1_cname == c_cname),
-        "exact_addr_match": int(bool(s1_caddr) and s1_caddr == c_caddr),
-        "num_overlap": num_match,
-    }
-
-
-def build_feature_frame(pairs_df, source1_df, other_df):
-    """
-    pairs_df: DataFrame with columns [source1_entity_id, candidate_entity_id]
-    All candidate_entity_id values must belong to `other_df`.
-    Returns pairs_df with feature columns appended.
-    """
-    if len(pairs_df) == 0:
-        return pd.DataFrame(columns=["source1_entity_id", "candidate_entity_id"] + FEATURE_COLUMNS)
-
-    # Fast dict lookup only for required entities instead of all 5M records
-    s1_needed = set(pairs_df["source1_entity_id"])
-    s1_sub = source1_df[source1_df["entity_id"].isin(s1_needed)]
-    s1_dict = dict(zip(
-        s1_sub["entity_id"],
-        zip(s1_sub["business_name"], s1_sub["business_address"], s1_sub["country"])
-    ))
-
-    other_needed = set(pairs_df["candidate_entity_id"])
-    other_sub = other_df[other_df["entity_id"].isin(other_needed)]
-    other_dict = dict(zip(
-        other_sub["entity_id"],
-        zip(other_sub["business_name"], other_sub["business_address"], other_sub["country"])
-    ))
-
-    import time
-    n_pairs = len(pairs_df)
-    records = []
-    s1_ids = pairs_df["source1_entity_id"].to_numpy()
-    cand_ids = pairs_df["candidate_entity_id"].to_numpy()
-
-    t0 = time.time()
-    for i, (s1_id, cand_id) in enumerate(zip(s1_ids, cand_ids)):
-        if i > 0 and i % 50000 == 0:
-            print(f"     [Progress] Computed features: {i:,} / {n_pairs:,} ({(i / n_pairs) * 100:.0f}%) in {time.time() - t0:.1f}s", flush=True)
-        s1_row = s1_dict.get(s1_id, ("", "", ""))
-        cand_row = other_dict.get(cand_id, ("", "", ""))
-        records.append(compute_pair_features(s1_row, cand_row))
-
-    feat_df = pd.DataFrame(records, columns=FEATURE_COLUMNS)
-    return pd.concat([pairs_df.reset_index(drop=True), feat_df], axis=1)
+    return [
+        name_ratio, name_tsr, name_tsort, name_exact,
+        core_ratio, core_tsr, core_exact,
+        addr_tsr, num_overlap, hnum_match, hnum_conflict, country_match
+    ]

@@ -1,18 +1,6 @@
 """
-Scoring utilities: per-entity F_beta, macro-averaged across Source-1
-entities -- matching the competition's evaluation formula exactly,
-including full credit for correctly predicted singletons.
+Official Macro-F0.5 evaluation metric implementation matching the challenge formula.
 """
-
-
-def _f_beta(precision, recall, beta=0.5):
-    if precision == 0 and recall == 0:
-        return 0.0
-    beta2 = beta ** 2
-    denom = beta2 * precision + recall
-    if denom == 0:
-        return 0.0
-    return (1 + beta2) * precision * recall / denom
 
 
 def entity_f_beta(predicted_ids, true_ids, beta=0.5):
@@ -20,11 +8,17 @@ def entity_f_beta(predicted_ids, true_ids, beta=0.5):
     if not true_ids and not predicted_ids:
         return 1.0  # correctly predicted singleton
     if not predicted_ids or not true_ids:
-        return 0.0
+        return 0.0  # false positive on singleton, or missed match
     tp = len(predicted_ids & true_ids)
+    if tp == 0:
+        return 0.0
     precision = tp / len(predicted_ids)
     recall = tp / len(true_ids)
-    return _f_beta(precision, recall, beta=beta)
+    beta2 = beta ** 2
+    denom = beta2 * precision + recall
+    if denom == 0:
+        return 0.0
+    return (1 + beta2) * precision * recall / denom
 
 
 def macro_f_beta(predictions, ground_truth, beta=0.5):

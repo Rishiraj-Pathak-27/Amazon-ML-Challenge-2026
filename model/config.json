@@ -1,21 +1,26 @@
 {
-  "threshold": 0.6499999999999999,
-  "val_f05": 0.9678134575480923,
-  "val_precision": 0.9859654781490119,
-  "val_recall": 0.9014306553549679,
-  "in_features": 11,
-  "feature_columns": [
+  "model_type": "LightGBM Classifier (Gradient Boosted Trees)",
+  "framework": "lightgbm",
+  "license": "MIT License",
+  "features": [
     "name_ratio",
     "name_token_set_ratio",
     "name_token_sort_ratio",
-    "core_name_ratio",
-    "address_ratio",
-    "address_token_set_ratio",
-    "address_number_match",
-    "country_match",
-    "name_exact_match",
-    "core_name_exact_match",
-    "address_exact_match"
+    "name_exact",
+    "core_ratio",
+    "core_token_set_ratio",
+    "core_exact",
+    "addr_token_set_ratio",
+    "num_overlap",
+    "hnum_match",
+    "hnum_conflict",
+    "country_match"
   ],
-  "epochs": 15
+  "n_estimators": 300,
+  "threshold": 0.98,
+  "validation_metric": "Macro-F0.5",
+  "val_macro_f05": 0.800678447369624,
+  "train_pairs": 7125022,
+  "val_pairs": 1692757,
+  "trained_date": "2026-09-27 23:29:42"
 }

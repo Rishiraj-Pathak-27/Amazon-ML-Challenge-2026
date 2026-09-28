@@ -1,248 +1,243 @@
 """
-Run inference on the test set and generate:
-    output/candidate_pairs.tsv   -- blocking stage output
-    output/matching_results.tsv  -- final matched entities
-
-Fast, scalable country-partitioned multi-key pipeline.
-Ultra low-memory footprint (< 4.5 GB peak RAM) using sparse defaultdicts,
-batched streaming, and aggressive memory reclamation.
+Inference script using trained LightGBM entity matcher and multi-channel inverted indexing.
 
 Usage:
-    python -m src.predict --test-dir dataset/test --output-dir output
+    python3 -m src.predict --test-dir dataset/test --model-dir model --output-dir output
 """
 import argparse
 import gc
+import json
 import os
-import re
+import shutil
 import time
 from collections import defaultdict
+import joblib
+import numpy as np
 import polars as pl
-from rapidfuzz import fuzz
 
-from .normalize import normalize_country, LEGAL_SUFFIXES, _ADDRESS_ABBREVIATIONS
-
-
-def _clean_name(s):
-    if not s:
-        return ""
-    s = re.sub(r"[^\w\s]", " ", str(s).lower())
-    words = [w for w in s.split() if w not in LEGAL_SUFFIXES]
-    return " ".join(words)
+from .normalize import norm_country, clean_name, core_name, clean_addr, extract_addr_features
+from .blocking import build_inverted_index
+from .features import compute_pairwise_features, FEATURE_NAMES
 
 
-def _clean_addr(s):
-    if not s:
-        return ""
-    s = re.sub(r"[^\w\s]", " ", str(s).lower())
-    words = [_ADDRESS_ABBREVIATIONS.get(w, w) for w in s.split()]
-    return " ".join(words)
+def main():
+    parser = argparse.ArgumentParser(description="Run LightGBM Inference for Business Entity Resolution")
+    parser.add_argument("--test-dir", default="dataset/test", help="Directory containing test TSV files")
+    parser.add_argument("--model-dir", default="model", help="Directory containing trained model and config")
+    parser.add_argument("--output-dir", default="output", help="Directory to save output TSV files")
+    parser.add_argument("--batch-size", type=int, default=500_000, help="Batch size for streaming target files")
+    args = parser.parse_args()
 
-
-def run_prediction(test_dir="dataset/test", output_dir="output", max_cands_per_s1=30, batch_size=500_000):
     t_start = time.time()
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(args.output_dir, exist_ok=True)
 
-    s1_path = os.path.join(test_dir, "test_source1.tsv")
-    s2_path = os.path.join(test_dir, "test_source2.tsv")
-    s3_path = os.path.join(test_dir, "test_source3.tsv")
+    print("=" * 80)
+    print(" Amazon ML Challenge 2026 — LightGBM Entity Matcher Inference")
+    print("=" * 80, flush=True)
 
-    print(f"[*] Loading Source 1 from {s1_path}...", flush=True)
+    # 1. Load Model & Config
+    model_path = os.path.join(args.model_dir, "lgbm_entity_matcher.joblib")
+    config_path = os.path.join(args.model_dir, "config.json")
+
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model file not found at {model_path}. Train the model first via python3 -m src.train")
+
+    print(f"[*] Loading model from {model_path}...", flush=True)
+    clf = joblib.load(model_path)
+    with open(config_path) as f:
+        config = json.load(f)
+    tau = float(config.get("threshold", 0.90))
+    print(f"[+] Model loaded. Calibrated decision threshold: tau = {tau:.3f}", flush=True)
+
+    # 2. Load & Index Source 1 Queries
+    s1_path = os.path.join(args.test_dir, "test_source1.tsv")
+    print(f"\n[Step 1/3] Loading and indexing Source 1 queries from {s1_path}...", flush=True)
+    t0 = time.time()
     s1_df = pl.read_csv(s1_path, separator="\t")
     n_s1 = len(s1_df)
-    print(f"[+] Loaded {n_s1:,} Source 1 entities in {time.time() - t_start:.2f}s.", flush=True)
 
-    eids = s1_df["entity_id"].to_list()
-    countries = [normalize_country(c) for c in s1_df["country"].to_list()]
-    raw_names = s1_df["business_name"].to_list()
-    raw_addrs = s1_df["business_address"].to_list()
-    clean_names = [_clean_name(x) for x in raw_names]
-    clean_addrs = [_clean_addr(x) for x in raw_addrs]
-
-    # Free raw DataFrame memory immediately
-    del s1_df, raw_names, raw_addrs
+    s1_eids = s1_df["entity_id"].to_list()
+    s1_raw_c = s1_df["country"].to_list()
+    s1_raw_nm = s1_df["business_name"].to_list()
+    s1_raw_ad = s1_df["business_address"].to_list()
+    del s1_df
     gc.collect()
 
-    print("[*] Building multi-channel inverted index...", flush=True)
-    t_idx = time.time()
-    index_N = defaultdict(list)
-    index_A = defaultdict(list)
-    index_NA = defaultdict(list)
-    index_N2 = defaultdict(list)
+    s1_cc = [norm_country(x) for x in s1_raw_c]
+    s1_cn = [clean_name(x) for x in s1_raw_nm]
+    s1_ca = [clean_addr(s1_raw_ad[i], s1_cc[i]) for i in range(n_s1)]
+    s1_cr = [core_name(x) for x in s1_cn]
 
-    for idx in range(n_s1):
-        c = countries[idx]
-        cn = clean_names[idx]
-        ca = clean_addrs[idx]
-        if cn:
-            index_N[(c, cn)].append(idx)
-            words = cn.split()
-            if len(words) >= 2:
-                index_N2[(c, " ".join(words[:2]))].append(idx)
-        if ca:
-            index_A[(c, ca)].append(idx)
-            nums = [w for w in ca.split() if any(ch.isdigit() for ch in w)]
-            if nums and cn:
-                first_w = cn.split()[0]
-                index_NA[(c, f"{nums[0]}_{first_w}")].append(idx)
+    s1_nums, s1_hnums = [], []
+    for i in range(n_s1):
+        _, hnum, nums_set, _, _ = extract_addr_features(s1_raw_ad[i], s1_ca[i], s1_cc[i])
+        s1_nums.append(nums_set)
+        s1_hnums.append(hnum)
 
-    # Free country strings since index has absorbed them
-    del countries
-    gc.collect()
+    s1_lookup = [
+        (s1_cn[i], s1_ca[i], s1_cr[i], s1_nums[i], s1_hnums[i], s1_cc[i])
+        for i in range(n_s1)
+    ]
 
-    # Prune overly large N2 buckets to prevent false candidate explosion
-    index_N2 = {k: v for k, v in index_N2.items() if len(v) <= 25}
+    index = build_inverted_index(s1_eids, s1_raw_c, s1_raw_nm, s1_raw_ad, s1_ca)
+    print(f"[+] Loaded and indexed {n_s1:,} queries ({len(index):,} active keys) in {time.time()-t0:.1f}s.", flush=True)
 
-    print(f"[+] Index built in {time.time() - t_idx:.2f}s! (N: {len(index_N):,}, A: {len(index_A):,}, NA: {len(index_NA):,})", flush=True)
+    # 3. Stream Targets & ML Scoring
+    print("\n[Step 2/3] Streaming targets & scoring candidate pairs with LightGBM...", flush=True)
+    matches_dict = defaultdict(list)
+    candidates_dict = defaultdict(list)
 
-    # Use sparse defaultdicts: entities without candidates or matches consume 0 bytes
-    candidates_dict = defaultdict(set)
-    matches_dict = defaultdict(set)
-
-    # Function to scan another source in memory-safe batches
-    def process_source_batched(src_path, src_label):
+    def stream_and_score(path, label):
         t_src = time.time()
-        print(f"\n[*] Processing {src_label} from {src_path} in streaming batches...", flush=True)
-
-        reader = pl.read_csv_batched(src_path, separator="\t", batch_size=batch_size)
+        print(f"[*] Processing {label} from {path}...", flush=True)
+        reader = pl.read_csv_batched(path, separator="\t", batch_size=args.batch_size)
         total_rows = 0
+        total_pairs = 0
 
         while True:
             batches = reader.next_batches(1)
             if not batches:
                 break
-            batch_df = batches[0]
-            batch_len = len(batch_df)
-            total_rows += batch_len
+            b = batches[0]
+            total_rows += len(b)
+            eids = b["entity_id"].to_list()
+            countries = b["country"].to_list()
+            names = b["business_name"].to_list()
+            addrs = b["business_address"].to_list()
+            del b
 
-            src_eids = batch_df["entity_id"].to_list()
-            src_countries = [normalize_country(c) for c in batch_df["country"].to_list()]
-            src_cnames = [_clean_name(x) for x in batch_df["business_name"].to_list()]
-            src_caddrs = [_clean_addr(x) for x in batch_df["business_address"].to_list()]
+            batch_pairs_s1 = []
+            batch_pairs_t = []
+            batch_features = []
 
-            del batch_df
+            for t_id, c, nm, ad in zip(eids, countries, names, addrs):
+                nc = norm_country(c)
+                cn = clean_name(nm)
+                ca = clean_addr(ad, nc)
+                cr = core_name(cn)
 
-            # Matching loop over this batch
-            for eid, c, cn, ca in zip(src_eids, src_countries, src_cnames, src_caddrs):
-                # 1. Exact Name Channel (high precision)
-                if cn and (c, cn) in index_N:
-                    for idx in index_N[(c, cn)]:
-                        matches_dict[idx].add(eid)
-                        candidates_dict[idx].add(eid)
-
-                # 2. Exact Address Channel
-                if ca and (c, ca) in index_A:
-                    for idx in index_A[(c, ca)]:
-                        matches_dict[idx].add(eid)
-                        candidates_dict[idx].add(eid)
-
-                # 3. Numeric + Name Prefix Channel
-                nums = [w for w in ca.split() if any(ch.isdigit() for ch in w)]
-                if nums and cn:
-                    first_w = cn.split()[0]
-                    k = (c, f"{nums[0]}_{first_w}")
-                    if k in index_NA:
-                        for idx in index_NA[k]:
-                            if fuzz.ratio(clean_names[idx], cn) >= 70:
-                                matches_dict[idx].add(eid)
-                                candidates_dict[idx].add(eid)
-                            elif len(candidates_dict[idx]) < max_cands_per_s1:
-                                candidates_dict[idx].add(eid)
-
-                # 4. First 2 Words Name Channel
+                matched_s1 = set()
                 if cn:
-                    words = cn.split()
-                    if len(words) >= 2:
-                        k = (c, " ".join(words[:2]))
-                        if k in index_N2:
-                            for idx in index_N2[k]:
-                                s1_ca = clean_addrs[idx]
-                                if fuzz.ratio(clean_names[idx], cn) >= 85 or (ca and s1_ca and fuzz.ratio(s1_ca, ca) >= 75):
-                                    matches_dict[idx].add(eid)
-                                    candidates_dict[idx].add(eid)
-                                elif len(candidates_dict[idx]) < max_cands_per_s1:
-                                    candidates_dict[idx].add(eid)
+                    k1 = ("N_EXACT", nc, cn)
+                    if k1 in index:
+                        matched_s1.update(index[k1])
+                    if cr and cr != cn:
+                        k2 = ("N_CORE", nc, cr)
+                        if k2 in index:
+                            matched_s1.update(index[k2])
+                _, hnum, nums_set, swords, multi_h = extract_addr_features(ad, ca, nc)
+                for h in multi_h:
+                    if h and swords:
+                        k_ns = ("NUM_STREET", nc, f"{h}_{swords[0]}")
+                        if k_ns in index:
+                            matched_s1.update(index[k_ns])
+                    if h and cn:
+                        w0 = cn.split()[0]
+                        if len(w0) >= 3:
+                            k_na = ("NA_NUM", nc, f"{h}_{w0}")
+                            if k_na in index:
+                                matched_s1.update(index[k_na])
 
-            del src_eids, src_countries, src_cnames, src_caddrs
-            print(f"     [Progress] {src_label}: {total_rows:,} rows scanned in {time.time() - t_src:.1f}s", flush=True)
+                if not matched_s1:
+                    continue
 
-        print(f"[+] Completed {src_label} ({total_rows:,} rows) in {time.time() - t_src:.2f}s.", flush=True)
+                t_meta = (cn, ca, cr, nums_set, hnum, nc)
+                for s1_idx in matched_s1:
+                    feats = compute_pairwise_features(s1_lookup[s1_idx], t_meta)
+                    batch_pairs_s1.append(s1_idx)
+                    batch_pairs_t.append(t_id)
+                    batch_features.append(feats)
+
+            if batch_features:
+                X_batch = np.array(batch_features, dtype=np.float32)
+                probs = clf.predict_proba(X_batch)[:, 1]
+                total_pairs += len(probs)
+
+                for s1_idx, t_id, prob in zip(batch_pairs_s1, batch_pairs_t, probs):
+                    candidates_dict[s1_idx].append(t_id)
+                    if prob >= (tau - 0.05):
+                        matches_dict[s1_idx].append((t_id, float(prob)))
+
+            if total_rows % 1_000_000 == 0:
+                print(f"     {label}: {total_rows:,} rows, {total_pairs:,} candidate pairs scored ({time.time()-t_src:.1f}s)", flush=True)
+
+        print(f"[+] {label}: {total_rows:,} rows, {total_pairs:,} candidates scored in {time.time()-t_src:.1f}s.", flush=True)
         gc.collect()
 
-    # Process Source 2 and Source 3 with batched streaming
-    process_source_batched(s2_path, "Source 2")
-    process_source_batched(s3_path, "Source 3")
-
-    # CRITICAL: Reclaim index memory (~3 GB) IMMEDIATELY before saving files
-    print("\n[*] Freeing index memory before saving outputs...", flush=True)
-    del index_N, index_A, index_NA, index_N2, clean_names, clean_addrs
+    s2_path = os.path.join(args.test_dir, "test_source2.tsv")
+    s3_path = os.path.join(args.test_dir, "test_source3.tsv")
+    stream_and_score(s2_path, "Source 2")
+    stream_and_score(s3_path, "Source 3")
+    del index
     gc.collect()
 
-    # Step 1: Write matching_results.tsv first
-    match_path = os.path.join(output_dir, "matching_results.tsv")
-    print(f"[*] Writing {match_path}...", flush=True)
+    # 4. Generate Output TSV Files
+    print("\n[Step 3/3] Generating Submission TSVs...", flush=True)
+    match_path = os.path.join(args.output_dir, "matching_results.tsv")
+    cand_path = os.path.join(args.output_dir, "candidate_pairs.tsv")
+
     n_with_match = 0
-    MAX_MATCHES_PER_S1 = 11  # Ground truth max is 11; prevents runaway false positives & guarantees file < 512MB
-    with open(match_path, "w", encoding="utf-8") as f:
-        f.write("source1_entity_id\tmatched_entity_ids\n")
-        for idx, eid in enumerate(eids):
-            if idx in matches_dict:
+    total_matches = 0
+
+    with open(match_path, "w", encoding="utf-8") as f_match, open(cand_path, "w", encoding="utf-8") as f_cand:
+        f_match.write("source1_entity_id\tmatched_entity_ids\n")
+        f_cand.write("source1_entity_id\tcandidate_entity_ids\n")
+
+        for idx, eid in enumerate(s1_eids):
+            m_list = matches_dict.get(idx, [])
+            c_list = candidates_dict.get(idx, [])
+
+            # Deduplicate candidate IDs preserving order
+            cands = []
+            seen_cands = set()
+            for cid in c_list:
+                if cid not in seen_cands:
+                    seen_cands.add(cid)
+                    cands.append(cid)
+            cands = cands[:15]  # Cap candidate pairs
+
+            top = []
+            if m_list:
+                best_prob = max(p for _, p in m_list)
+                if best_prob >= tau:
+                    # Adaptive windowing around top probability
+                    top_candidates = [tid for tid, p in sorted(m_list, key=lambda x: -x[1]) if p >= max(tau, best_prob - 0.05)][:5]
+                    seen_top = set()
+                    for tid in top_candidates:
+                        if tid not in seen_top:
+                            seen_top.add(tid)
+                            top.append(tid)
+
+            # Ensure all matched IDs are present in candidates
+            for tid in top:
+                if tid not in seen_cands:
+                    seen_cands.add(tid)
+                    cands.append(tid)
+
+            if top:
                 n_with_match += 1
-                m = sorted(matches_dict[idx])[:MAX_MATCHES_PER_S1]
-                match_str = ",".join(m)
-                f.write(f"{eid}\t{match_str}\n")
+                total_matches += len(top)
+                f_match.write(f"{eid}\t{','.join(top)}\n")
             else:
-                f.write(f"{eid}\t\n")
+                f_match.write(f"{eid}\t\n")
 
-    # Strict File Size Verification (Portal constraint: max 512 MB)
-    match_size_mb = os.path.getsize(match_path) / (1024 * 1024)
-    print(f"[+] File Size Check: {match_path} is {match_size_mb:.2f} MB (Portal limit: 512.0 MB | {match_size_mb/512.0*100:.1f}%)", flush=True)
-    if match_size_mb > 512.0:
-        raise ValueError(f"CRITICAL: {match_path} size ({match_size_mb:.2f} MB) exceeds the 512 MB portal limit!")
-
-    n_singletons = n_s1 - n_with_match
-
-    # Reclaim matches memory
-    del matches_dict
-    gc.collect()
-
-    # Step 2: Write candidate_pairs.tsv
-    cand_path = os.path.join(output_dir, "candidate_pairs.tsv")
-    print(f"[*] Writing {cand_path}...", flush=True)
-    total_cands = 0
-    with open(cand_path, "w", encoding="utf-8") as f:
-        f.write("source1_entity_id\tcandidate_entity_ids\n")
-        for idx, eid in enumerate(eids):
-            if idx in candidates_dict:
-                cands = candidates_dict[idx]
-                total_cands += len(cands)
-                cand_str = ",".join(sorted(cands))
-                f.write(f"{eid}\t{cand_str}\n")
+            if cands:
+                f_cand.write(f"{eid}\t{','.join(cands)}\n")
             else:
-                f.write(f"{eid}\t\n")
+                f_cand.write(f"{eid}\t\n")
 
-    # Reclaim candidates memory
-    del candidates_dict, eids
-    gc.collect()
+            if (idx + 1) % 500_000 == 0:
+                print(f"     Written {idx+1:,}/{n_s1:,} entities...", flush=True)
 
-    print("\n" + "=" * 60, flush=True)
-    print(f"[+] Inference complete in {time.time() - t_start:.2f} seconds!", flush=True)
-    print(f"Total Source 1 entities: {n_s1:,}", flush=True)
-    print(f"Entities with >= 1 match: {n_with_match:,} ({n_with_match / n_s1 * 100:.1f}%)", flush=True)
-    print(f"Singletons (0 matches): {n_singletons:,} ({n_singletons / n_s1 * 100:.1f}%)", flush=True)
-    print(f"Total candidate pairs: {total_cands:,} (avg {total_cands / n_s1:.2f} per entity)", flush=True)
-    print(f"Saved: {cand_path}", flush=True)
-    print(f"Saved: {match_path}", flush=True)
-    print("=" * 60, flush=True)
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--test-dir", default="dataset/test")
-    parser.add_argument("--output-dir", default="output")
-    parser.add_argument("--batch-size", type=int, default=500000)
-    args = parser.parse_args()
-
-    run_prediction(test_dir=args.test_dir, output_dir=args.output_dir, batch_size=args.batch_size)
+    total_time = time.time() - t_start
+    print("\n" + "=" * 80)
+    print(f"[✔] LightGBM Inference Completed in {total_time:.1f}s ({total_time/60:.1f} min)")
+    print(f"    Saved Matching   : {match_path} ({os.path.getsize(match_path)/(1024*1024):.2f} MB)")
+    print(f"    Saved Candidates : {cand_path} ({os.path.getsize(cand_path)/(1024*1024):.2f} MB)")
+    print(f"    Entities Matched : {n_with_match:,} / {n_s1:,} ({n_with_match/n_s1*100:.1f}%)")
+    print(f"    Singletons       : {n_s1 - n_with_match:,} ({(n_s1 - n_with_match)/n_s1*100:.1f}%)")
+    print(f"    Total Matches    : {total_matches:,}")
+    print("=" * 80, flush=True)
 
 
 if __name__ == "__main__":
